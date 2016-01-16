@@ -5,23 +5,17 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/synch.h"
-#include "userprog/process.h"
-#include "userprog/pagedir.h"
-#include "filesys/filesys.h"
-#include "filesys/file.h"
-
 
 static void syscall_handler (struct intr_frame *);
-
 struct list process_info_list;
 static struct lock pil_lock;
-static struct lock proc_lock;
 static struct lock file_lock;
-static int fd = 3;
+static struct lock multi_lock;
+static struct file *file_fd[128];
 
-int fd_array[135];
-struct file *fd_file_ptrs[135];
-int index=0;
+static int counter = 0;
+static int fd = 3;
+static int fdarr[128];
 
 bool check_ptr(void* ptr) {
   struct thread* t = thread_current();
@@ -30,29 +24,6 @@ bool check_ptr(void* ptr) {
   }
   return true;
 }
-
-//////////////////////// GET FILE POINTER ////////////////////////
-/*
-* Checks the global array to find a valid fd (file descriptor)
-* that matches the fd of the stack pointer. Then checks the 
-* global array to find a file pointer corresponding to that array
-*
-*/////////////////////////////////////////////////////////////////  
-
-struct file* getFilePtr(int fd){
-  struct file *file=NULL;
-  for(index=0;index<135;index++){
-     if (fd == fd_array[index]){
-	file = fd_file_ptrs[index];
-	if(!file){
-	   return NULL;				
-	}else{
-	   return file;	
-	}					
-     }//end if
-  }//end for loop 
-  return file;
-}//end getFilePtrs
 
 struct process_info* get_process_info(tid_t pid) {
   struct list_elem *e;
@@ -76,311 +47,13 @@ struct process_info* get_process_info(tid_t pid) {
   return pi;
 }
 
-//Bonus code! System call handler for the create() system call.
-void create(struct intr_frame *f, int* esp) {
-  if ( !check_ptr(esp+1) || !check_ptr(esp+2) ) {
-    exit(-1);
-    return;
-  }
-  if (!check_ptr((void*)(*(esp + 1))) ){
-    exit(-1);
-    return;
-  }
-
-  char* buffer = *(esp + 1);
-  unsigned int size = *(esp + 2);
-  if (strlen(buffer) == 0) {
-    f->eax = 0;
-    return;
-  }
-  else {
-    f->eax = filesys_create(buffer, size);
-  }
-}
-
-
-//////////////////////////// OPEN \\\\\\\\\\\\\\\\\\\\\\\/
-void open (struct intr_frame *f, int* esp) {
-  if ( !check_ptr(esp+1)) {
-    exit(-1);
-    return;
-  }
-  if (!check_ptr((void*)(*(esp + 1))) ){
-    exit(-1);
-    return;
-  }
-
-  char* buffer = (void*)*(esp + 1);
- 
-  if (strlen(buffer) == 0) {
-    f->eax = -1;
-    return ;
-  }
-  else {
-    struct file *file = filesys_open(buffer);
-
-    if(!file){
-      f->eax = -1;
-  	return;
-    }
-   
-   fd_array[fd] = fd; //storing fd in an array
-   fd_file_ptrs[fd] = file;
-   f->eax = fd;
-   fd++;
-  	 
-  }
-}
-//////////////////////////// READ \\\\\\\\\\\\\\\\\\\\\\\/
-
-void read(struct intr_frame *f, int* esp) {
-  if ( !check_ptr(esp+1) || !check_ptr(esp+2) || !check_ptr(esp+3) ) {
-    exit(-1);
-    return;
-  }
-
-  int fd = *(esp + 1);
-  void* buffer = *(esp + 2);
-  unsigned int len = *(esp + 3);
-
-  if (!check_ptr( buffer )){
-    exit(-1);
-    return;
-  }
-
-  if (fd == STDIN_FILENO) {
-	unsigned i;
-    	for(i = 0; i < len; i++){
-		char * c_ptr = (char *) buffer;
-        	*(c_ptr+i) = input_getc ();
-    }
-    f->eax = len;
-    return;
-   
-  }
-
-  else if (fd == STDOUT_FILENO) {
-     exit(-1);
-     return;
-  }
-
-  else {
-    struct file *file=NULL;
-    file = getFilePtr(fd);
-    if(file){
-        lock_acquire(&file_lock);
-	f->eax = file_read (file, buffer, len) ;
-	lock_release(&file_lock);
-    }else{
-	f->eax = -1;
-    }
-  }
-}
-
-
-//////////////////////////// WRITE \\\\\\\\\\\\\\\\\\\\\\\/
-
-void write(struct intr_frame *f, int* esp) {
-  if ( !check_ptr(esp+1) || !check_ptr(esp+2) || !check_ptr(esp+3) ) {
-    exit(-1);
-    return;
-  }
-
-  int fd = *(esp + 1);
-  void* buffer = *(esp + 2);
-  unsigned int len = *(esp + 3);
-
-  if (!check_ptr( buffer )){	
-    exit(-1);
-    return;
-  }
-
-  if (fd == STDIN_FILENO) {
-    exit(-1);
-    return;
-  }
-  else if (fd == STDOUT_FILENO) {
-    putbuf(buffer, len);
-    f->eax = len;
-
-  }
-  else {
-    struct file *file=NULL;
-    file = getFilePtr(fd);
-    if(file){
-        lock_acquire(&file_lock);
-	f->eax = file_write (file, buffer, len) ;
-	lock_release(&file_lock);
-    }else{
-	f->eax = -1;
-    }
-  }
-}
-
-//////////////////////////// SEEK \\\\\\\\\\\\\\\\\\\\\\\/
-
-void seek(struct intr_frame *f, int* esp) {
-  int fd = *(esp + 1);
-  unsigned int position = *(esp + 2);
-
-  if ( !check_ptr(esp+1) || !check_ptr(esp+2) ) {
-    exit(-1);
-    return;
-  }
-
-  else { 
-    struct file *file=NULL;
-    file = getFilePtr(fd);
-    if(file){
-        lock_acquire(&file_lock);
-	file_seek (file,position) ;
-	lock_release(&file_lock);
-    }else{
-	f->eax = -1;
-    }
-  } 
-}
-
-//////////////////////////// WAIT \\\\\\\\\\\\\\\\\\\\\\\/
-void wait(struct intr_frame *f, int* esp) {
-  
-  if ( !check_ptr(esp+1)) {
-     exit(-1);
-    return;
-  }	
-  else{	
-    
-    lock_acquire(&proc_lock); 
-    f->eax = process_wait(*(esp + 1));
-    lock_release(&proc_lock);
-
-  }
-}
-
-//////////////////////////// EXECUTE \\\\\\\\\\\\\\\\\\\\\\\/
-void exec(struct intr_frame *f, int* esp) {
- char* file_name = *(esp + 1);
- 
-  
-  if (!check_ptr(file_name) ){    
-    f->eax=-1;
-    return;
-  }
-  
- /* struct file *myFile = filesys_open(copy(file_name)); //opening the file for checking whether it exists
-  if(!myFile){ //checking if file pointer is valid for execute missing
-   f->eax = -1;
-   return;
-  }
-  palloc_free_page(file_copy);*/
-  lock_acquire(&proc_lock);
-  f->eax = process_execute (file_name);
-  lock_release(&proc_lock);
-       
-  
-}
-
-
-//////////////////////////// FILESIZE ///////////////////////
-/*
-* Checks the length of file in bytes
-* Used in read function
-*
-*////////////////////////////////////////////////////////////
-void filesize(struct intr_frame *f, int* esp) {
- int fd = *(esp + 1);
-  if (!check_ptr(esp+1)) {
-    exit(-1);
-    return;
-  }
- 
-  else {
-    struct file *file=NULL;
-    file = getFilePtr(fd);
-    if(file){
-        lock_acquire(&file_lock);
-	f->eax = file_length (file) ;
-	lock_release(&file_lock);
-    }else{
-	f->eax = -1;
-    }
-  }
-}
-
-//////////////////////////// TELL \\\\\\\\\\\\\\\\\\\\\\\/
-void tell(struct intr_frame *f, int* esp) {
- int fd = *(esp + 1);
-  if (!check_ptr(esp+1)) {
-    exit(-1);
-    return;
-  }
- 
-  else {  
-    struct file *file=NULL;
-    file = getFilePtr(fd);
-    if(file){
-        lock_acquire(&file_lock);
-	f->eax = file_tell (file) ;
-      	lock_release(&file_lock);
-    }else{
-	f->eax = -1;
-    } 
-  }
-}
-
-//////////////////////////// REMOVE \\\\\\\\\\\\\\\\\\\\\\\/
-void remove(struct intr_frame *f, int* esp) {
- char *file = *(esp + 1);
-  if (!check_ptr(esp+1)) {
-    exit(-1);
-    return;
-  }
-  if (strlen(file) == 0)
-  {
-    f->eax = -1;
-    return;
-  }
-  else {
-        lock_acquire(&file_lock);
-	f->eax = filesys_remove(file) ;
-      	lock_release(&file_lock);
-      }    
-      
-}
-    
-//////////////////////////// CLOSE \\\\\\\\\\\\\\\\\\\\\\\/  
-void close(struct intr_frame *f, int* esp) {
-  int fd = *(esp + 1);
-  if (!check_ptr(fd)) {
-    exit(-1);
-    return;
-  }
-  else {
-    struct file *file=NULL;
-    file = getFilePtr(fd);
-    if(file){
-      lock_acquire(&file_lock);
-      
-      int i=0;
-      for(i=3;i<131;i++){
-	file_close (fd_file_ptrs[i]);
-      	fd_file_ptrs[i] = NULL;
-      }
-      file = NULL;
-      lock_release(&file_lock);
-      return;
-    }else{
-	f->eax = -1;
-    }
-  }	
-}
-  
 
 void add_process_to_list(const char* name, tid_t tid) {
   struct process_info *pi  = (struct process_info*) malloc (sizeof(struct process_info));
   pi->exit_code = -1000;
   pi->pid = tid;
-
+  sema_init(&pi->intazar,1);
+ 
   memcpy(pi->name, name, strlen(name)+1);
 
   lock_acquire(&pil_lock);
@@ -406,14 +79,87 @@ void set_process_exitcode(tid_t pid, int exit_code) {
   lock_release(&pil_lock);
 }
 
-void
-syscall_init (void) 
+
+
+void create(struct intr_frame *f, int* esp) {
+  if ( !check_ptr(esp+1) || !check_ptr(esp+2) ) {
+    exit(-1);
+    return;
+  }
+  if (!check_ptr((void*)(*(esp + 1))) ){
+    exit(-1);
+    return;
+  }
+
+  char* buffer = *(esp + 1);
+  unsigned int size = *(esp + 2);
+  if (strlen(buffer) == 0) {
+    f->eax = 0;
+    return;
+  }
+  else {
+	//lock_acquire(&file_lock);
+        f->eax = filesys_create(buffer, size);
+	//lock_release(&file_lock);
+  }
+}
+
+void remove(struct intr_frame *f, int* esp) {
+char* buffer = *(esp + 1);  
+if ( !check_ptr(esp+1) ){
+    exit(-1);
+    return;
+  }
+  if (!check_ptr((void*)(*(esp + 1))) ){
+    exit(-1);
+    return;
+  }
+	lock_acquire(&file_lock);
+    	f->eax = filesys_remove(buffer);
+	lock_release(&file_lock);
+  
+}
+
+void open(struct intr_frame *f, int* esp) {
+  if ( !check_ptr(esp+1)  ) {
+    exit(-1);
+    return;
+  }
+  if (!check_ptr((void*)*(esp + 1)) ){
+    exit(-1);
+    return;
+  }
+
+  char* buffer = (void*)*(esp + 1);
+  if (strlen(buffer) == 0) {
+    f->eax = -1;
+    return;
+  }
+  else {
+  lock_acquire(&file_lock);
+  struct file *fopen = filesys_open(buffer);
+ if (strstr(buffer, get_process_info(thread_current()->tid)->name)!=NULL)
 {
-  intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
-  list_init(&process_info_list);
-  lock_init(&pil_lock);
-  lock_init(&proc_lock);
-  lock_init(&file_lock);
+file_deny_write(fopen);
+}
+  if(!fopen)
+  {
+	lock_release(&file_lock);
+     f->eax = -1;
+     return;
+  }
+else {
+
+
+	file_fd[counter] = fopen;
+	fd = fd + 1;
+	fdarr[counter] = fd;
+	counter++;
+	f->eax = fd;
+	lock_release(&file_lock);
+}
+ 
+  }
 }
 
 
@@ -425,18 +171,324 @@ void exit(int exit_code) {
   printf("%s: exit(%d)\n", pi->name , exit_code);
   thread_exit();
 } 
+	
+
+void write(struct intr_frame *f, int* esp) {
+  if ( !check_ptr(esp+1) || !check_ptr(esp+2) || !check_ptr(esp+3) ) {
+    exit(-1);
+    return;
+  }
+  
+  int fd = *(esp + 1);
+  void* buffer = *(esp + 2);
+  unsigned int len = *(esp + 3);
+
+  if (!check_ptr( buffer )){
+    exit(-1);
+    return;
+  }
+
+  if (fd == STDIN_FILENO) {
+    exit(-1);
+    return;
+  }
+  else if (fd == STDOUT_FILENO) {
+    putbuf(buffer, len);
+    f->eax = len;
+  }
+  else {
+	struct file *fwrite=NULL;
+	    int i;
+	    for(i=0;i<128;i++)
+	    {
+		 
+		
+		if (fd == fdarr[i])
+		{
+			fwrite = file_fd[i];
+			
+			if(!fwrite){
+				f->eax = 0;			
+				return;		
+			}
+			
+			else {
+				lock_acquire(&file_lock);
+				f->eax = file_write(fwrite,buffer,len);
+				lock_release(&file_lock);				
+				return;
+			}	
+      	        }
+            }
+	
+
+}
+}
+void read(struct intr_frame *f, int* esp) {
+  if ( !check_ptr(esp+1) || !check_ptr(esp+2) || !check_ptr(esp+3) ) {
+    exit(-1);
+    return;
+  }
+
+  int fd = *(esp + 1);
+  void* buffer = *(esp + 2);
+  unsigned int len = *(esp + 3);
+
+  if (!check_ptr( buffer )){
+    exit(-1);
+    return;
+  }
+
+  if (fd == STDIN_FILENO) {
+  }
+  else if (fd == STDOUT_FILENO) {
+    exit(-1);
+    return;
+  }
+  else {
+	struct file *fread=NULL;
+	    int i;
+	    for(i=0;i<128;i++)
+            {
+		 
+		
+		if (fd == fdarr[i])
+		{
+			fread = file_fd[i];
+			
+			if(!fread)
+			{
+				f->eax = 0;
+				exit(0);			
+				return;		
+			}
+			
+			else {
+				lock_acquire(&file_lock);
+				f->eax = file_read(fread,buffer,len);
+				lock_release(&file_lock);				
+				return;
+			}	
+      	        }
+           }
+      }
+}
+void filesize(struct intr_frame *f, int* esp) {
+
+int size=-1;
+int i=0;
+struct file *fsize=NULL;
+	for (i=0; i < 128 ; i++)
+	{
+		if (fd == fdarr[i])
+		{
+			//lock_acquire(&file_lock);
+			fsize= file_fd[i];
+			if (!fsize)
+			{
+			//lock_release(&file_lock);
+			f->eax=-1; 	
+			exit(-1);
+			return;
+			}
+			else
+			{
+   				size = file_length(fsize);
+				//lock_release(&file_lock);
+				
+				
+			}
+		}
+	}
+f->eax = size;
+
+  
+}
+
+void 
+exec(struct intr_frame *f, int* esp) {
+  if ( !check_ptr(esp+1) ) {
+    exit(-1);
+    return;
+  }
+  if (!check_ptr((void*)(*(esp + 1))) ){
+    f->eax = -1;
+    exit(-1);
+  }
+  
+  char *name = *(esp + 1);
+  
+  if (strlen(name) == 0) {
+    f->eax = -1;
+    return;
+  }
 
 
+	//sema_down(&get_process_info(thread_current()->tid)->intazar);
 
+
+ //lock_acquire(&multi_lock);
+  int r=process_execute(name);
+	//if(r == TID_ERROR) {
+	//f->eax=-1;
+	//return;
+//}
+
+
+  f->eax = r;
+	//lock_release(&multi_lock);
+//lock_release(&file_lock);
+}
+void 
+wait(struct intr_frame *f, int* esp) {
+tid_t tid;
+  
+if ( !check_ptr(esp+1)) 
+  {
+    exit(-1);
+    return;
+  }
+
+  //lock_acquire(&multi_lock);
+  tid = *(esp + 1);
+	/*if (!tid)
+	{
+	lock_release(&multi_lock);
+	f->eax=-1;
+	exit(-1);
+	return;
+	}
+   */
+    f->eax = process_wait(tid);
+   // lock_release(&multi_lock);
+  
+}
+void 
+seek (struct intr_frame *f, int* esp)
+{
+
+  if ( !check_ptr(esp+1) || !check_ptr(esp+2) ) {
+    exit(-1);
+    return;
+  }
+  
+  int fd = *(esp + 1);
+  unsigned int position = *(esp + 2);
+  int i=0;
+  struct file *fseek=NULL;
+	for (i=0; i < 128 ; i++)
+	{
+		if (fd == fdarr[i])
+		{
+			//lock_acquire(&file_lock);
+			fseek= file_fd[i];
+			if (!fseek)
+			{
+			//lock_release(&file_lock);
+			f->eax=-1; 	
+			exit(-1);
+			return;
+			}
+			else
+			{
+   		        f->eax = file_seek(fseek, position);
+  			//lock_release(&file_lock);
+				
+				
+			}
+		}
+	}
+ 
+}
+void 
+tell (struct intr_frame *f, int* esp)
+{
+  if ( !check_ptr(esp+1) || !check_ptr(esp+2) ) {
+    exit(-1);
+    return;
+  }
+  
+  int fd = *(esp + 1);
+  int i=0;
+  struct file *ftell=NULL;
+	for (i=0; i < 128 ; i++)
+	{
+		if (fd == fdarr[i])
+		{
+			//lock_acquire(&file_lock);
+			ftell= file_fd[i];
+			if (!ftell)
+			{
+			//lock_release(&file_lock);
+			f->eax=-1; 	
+			exit(-1);
+			return;
+			}
+			else
+			{
+   			f->eax = file_tell(ftell);
+  			//lock_release(&file_lock);
+				
+				
+			}
+		}
+	}
+}
+void 
+close (struct intr_frame *f, int* esp)
+{
+  if ( !check_ptr(esp+1)) {
+    exit(-1);
+    return;
+  }
+ // void* a=0;
+  int fd = *(esp + 1);
+  int i=0;
+  struct file *fclose=NULL;
+	for (i=0; i < 128 ; i++)
+	{
+		if (fd == fdarr[i])
+		{
+			lock_acquire(&file_lock);
+			fclose= file_fd[i];
+			if (!fclose || fclose==NULL)
+			{
+			lock_release(&file_lock);
+			f->eax=-1; 	
+			exit(-1);
+			return;
+			}
+			else
+			{
+			f->eax = file_close(fclose);
+				//fclose=NULL;
+file_fd[i]=NULL;
+  			lock_release(&file_lock);
+			
+			
+			}
+			break;
+		}
+
+	}
+}
+void
+syscall_init (void) 
+{
+  intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  list_init(&process_info_list);
+  lock_init(&pil_lock);
+  lock_init(&file_lock);
+lock_init(&multi_lock);
+}
 
 
 static void
-syscall_handler (struct intr_frame *f)
+syscall_handler (struct intr_frame *f UNUSED) 
 {
   int* esp = f->esp;
- 
+  
   if ( !check_ptr(esp)) {
-    //You have to implement the exit function.
     exit(-1);
     return;
   }
@@ -453,35 +505,42 @@ syscall_handler (struct intr_frame *f)
     int exit_code = *(esp+1) ;
     exit(exit_code);
   }
-  else if (number == SYS_WRITE) {
-    write(f, esp);
-  }
+ 
   else if (number == SYS_CREATE) {
-   create(f, esp);
-  }
-  else if (number == SYS_OPEN) {
-    open(f,esp);
-  }
-  else if (number == SYS_READ) {
-    read(f, esp);
-  }
-  else if (number == SYS_WAIT) {
-    wait(f, esp);
-  }
-  else if (number == SYS_EXEC) {
-    exec(f, esp);
-  }
-  else if (number == SYS_FILESIZE) {
-    filesize(f, esp);
-  }
-  else if (number == SYS_SEEK) {
-    seek(f, esp);
-  }
-  else if (number == SYS_TELL) {
-    tell(f, esp);
+    create(f, esp);
   }
   else if (number == SYS_REMOVE) {
     remove(f, esp);
   }
- 
+  else if (number == SYS_OPEN) {
+    open(f,esp);
+  }
+  else if (number == SYS_WRITE) {
+    write(f, esp);
+  }
+  else if (number == SYS_READ) {
+    read(f, esp);
+  }
+   else if (number == SYS_EXEC) {
+   exec(f,esp);
+  }
+  else if (number == SYS_WAIT) {
+    wait(f, esp);
+  }
+  else if (number == SYS_FILESIZE) {
+    filesize(f, esp);
+  }
+ else if (number == SYS_SEEK) {
+    seek(f, esp);
+  }
+ else if (number == SYS_TELL) {
+    tell(f, esp);
+  }
+ else if (number == SYS_CLOSE) {
+    close(f, esp);
+  }
+
 }
+
+
+

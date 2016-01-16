@@ -18,10 +18,10 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/synch.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
-
 struct token_list_elem {
   char arg[128];
   int addr;
@@ -29,7 +29,6 @@ struct token_list_elem {
   struct list_elem elem;
 };
 
-tid_t tempTid;
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -47,27 +46,33 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  
   /* Create a new thread to execute FILE_NAME. */
+ 
+  
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   else {
+
+
     char* save_ptr;
     char* filename_copy = palloc_get_page(0);
     strlcpy (filename_copy, file_name, PGSIZE);
     char *token = strtok_r (filename_copy, " ", &save_ptr);
  	struct file *myFile = filesys_open(token); 
-	  if(!myFile){
+	  if(!myFile)
+		{
 	   return -1;
-	}
-
+		}
 
     add_process_to_list(token, tid);
+  
     palloc_free_page(filename_copy);
 
-	   
   } 
+struct process_info *pi = get_process_info(tid);
+  sema_down(&pi->intazar);
+ 
   return tid;
 }
 
@@ -86,11 +91,15 @@ start_process (void *file_name_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
-
-  /* If load failed, quit. */
-  palloc_free_page (file_name);
+ struct process_info *p = get_process_info(thread_current()->tid);
+  sema_up(&p->intazar);
+   
+ palloc_free_page (file_name);
   if (!success) 
+{
     thread_exit ();
+}
+
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -114,13 +123,11 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {  
-  
   int exit_code = -1;
+
   struct process_info* pi = get_process_info(child_tid);
- 
-  if(tempTid == child_tid){
-  	return -1;
-  }
+
+
   if (pi == NULL) return -1;
 
   while (pi->exit_code == -1000) {
@@ -128,24 +135,11 @@ process_wait (tid_t child_tid UNUSED)
     pi = get_process_info(child_tid);
   }
 
-  tempTid = child_tid;
+  list_remove(&pi->elem);
   return pi->exit_code;
 }
 
 /* Free the current process's resources. */
-
-/*
-struct process_info* 
-find_child (tid_t child_tid, struct process_info* pi){
-  struct list_elem *e;
-  for (e = list_begin (&pi->children_list); e != list_end (&pi->children_list);
-      e = list_next(e)){
-    if (((struct process_info*)list_entry(e, struct process_info, childelem))->tid == child_tid)
-      return (struct process_info*)list_entry (e, struct process_info, childelem);
-  }
-  return NULL;
-}*/
-
 void
 process_exit (void)
 {
@@ -511,7 +505,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       uint8_t *kpage = palloc_get_page (PAL_USER);
       if (kpage == NULL)
         return false;
-
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
@@ -526,6 +519,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
           palloc_free_page (kpage);
           return false; 
         }
+
 
       /* Advance. */
       read_bytes -= page_read_bytes;
@@ -574,4 +568,3 @@ install_page (void *upage, void *kpage, bool writable)
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
-
